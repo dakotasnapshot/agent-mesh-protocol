@@ -1,12 +1,12 @@
 # Agent Mesh Protocol v1.0
 
-A simple JSON protocol for **full-duplex** AI agent-to-agent communication over **HTTP** (primary) with optional **Matrix** fallback. Works with **OpenClaw**, **hermes-agent**, or any agent with an HTTP API.
+A simple JSON protocol for **full-duplex** AI agent-to-agent communication over **HTTP** (primary) with optional **chat platform fallback** (Matrix, Discord, Signal, Telegram, iMessage, Slack, or any supported channel). Works with **OpenClaw**, **hermes-agent**, or any agent with an HTTP API.
 
 ## Why?
 
 When you run multiple AI agents (different models, different roles), they need a way to coordinate. Natural language works for human-to-agent chat, but agent-to-agent communication benefits from structured payloads:
 
-- **Transport-agnostic** — HTTP primary, Matrix/webhook fallback
+- **Transport-agnostic** — HTTP primary, any chat platform as fallback
 - **Full-duplex** — real-time bidirectional messaging
 - **No plugin dependency** — uses native gateway APIs that survive updates
 - **Deterministic routing** — message types map to handlers
@@ -39,10 +39,10 @@ When you run multiple AI agents (different models, different roles), they need a
 
 Every OpenClaw instance has a built-in HTTP gateway. hermes-agent has an OpenAI-compatible API server. Both speak the same protocol — `POST /v1/chat/completions`.
 
-**Why HTTP over Matrix?**
+**Why HTTP over chat platforms?**
 - HTTP gateway is **core to OpenClaw** — it survives updates
-- Matrix is a **plugin** — updates can break it
-- HTTP is simpler, faster, and doesn't require a Matrix homeserver
+- Chat platforms (Matrix, Discord, Signal, etc.) are **plugins** — updates can break them
+- HTTP is simpler, faster, and doesn't require a third-party server
 - hermes-agent already has a built-in API server
 
 #### Sending a message to an OpenClaw agent:
@@ -75,9 +75,23 @@ curl -X POST http://<hermes-ip>:8642/v1/chat/completions \
 
 The response comes back in the `choices[0].message.content` field of the standard OpenAI response format.
 
-### Fallback: Matrix DMs (optional)
+### Fallback: Chat Platform DMs (optional)
 
-If an agent can't be reached via HTTP (network partition, agent behind NAT), Matrix DMs work as a fallback. Add peer agents to the DM allowlist so messages wake the receiving agent.
+If an agent can't be reached via HTTP (network partition, agent behind NAT), any chat platform the agents share can work as a fallback. The protocol is transport-agnostic — the same JSON payloads work over:
+
+| Platform | How it works |
+|----------|-------------|
+| **Matrix** | DM between agent accounts; add peers to `dm.allowFrom` |
+| **Discord** | DM or shared channel; agents need Discord bot tokens |
+| **Signal** | Direct messages between agent phone numbers |
+| **Telegram** | Bot-to-bot via shared group or direct message |
+| **iMessage** | Messages between agent Apple IDs |
+| **Slack** | DM or channel messages between bot users |
+| **Webhook** | POST to agent's webhook endpoint |
+
+The agent-mesh JSON is sent as the message body. The receiving agent checks for `"protocol": "agent-mesh"` and handles it the same way regardless of transport.
+
+**Configuration varies by platform** — see your runtime's docs for DM allowlists, bot tokens, or channel setup. The protocol itself doesn't care how the JSON gets there.
 
 ## Message Format
 
@@ -411,7 +425,11 @@ Create a registry file that all agents can reference:
       "endpoint": "http://192.168.1.100:18789/v1/chat/completions",
       "token": "bucky-gateway-token",
       "role": "coordinator",
-      "capabilities": ["ping", "task", "broadcast", "capability_query"]
+      "capabilities": ["ping", "task", "broadcast", "capability_query"],
+      "fallback": {
+        "platform": "matrix",
+        "address": "@bucky:matrix.example.com"
+      }
     },
     "timber": {
       "runtime": "openclaw",
@@ -419,7 +437,11 @@ Create a registry file that all agents can reference:
       "endpoint": "http://192.168.1.101:18789/v1/chat/completions",
       "token": "timber-gateway-token",
       "role": "research",
-      "capabilities": ["ping", "task", "broadcast"]
+      "capabilities": ["ping", "task", "broadcast"],
+      "fallback": {
+        "platform": "discord",
+        "address": "timber-bot#1234"
+      }
     },
     "hermes": {
       "runtime": "hermes",
@@ -427,8 +449,21 @@ Create a registry file that all agents can reference:
       "endpoint": "http://192.168.1.102:8642/v1/chat/completions",
       "token": "hermes-api-key",
       "role": "general",
-      "capabilities": ["ping", "task", "broadcast", "capability_query"]
+      "capabilities": ["ping", "task", "broadcast", "capability_query"],
+      "fallback": {
+        "platform": "signal",
+        "address": "+15551234567"
+      }
     }
+  },
+  "fallback_platforms": {
+    "matrix": { "note": "DM between Matrix accounts" },
+    "discord": { "note": "DM or shared server channel" },
+    "signal": { "note": "Direct Signal messages" },
+    "telegram": { "note": "Bot DMs or shared group" },
+    "imessage": { "note": "iMessage between Apple IDs" },
+    "slack": { "note": "DM or channel between bot users" },
+    "webhook": { "note": "HTTP POST to webhook URL" }
   }
 }
 ```
@@ -442,7 +477,7 @@ Create a registry file that all agents can reference:
 - **Protocol field as discriminator** — easy to distinguish from human chat
 - **Stateless messages** — self-contained, no shared state required
 - **Extensible** — add new types without breaking existing handlers
-- **Matrix as fallback** — optional for NAT traversal or when HTTP isn't available
+- **Chat platform fallback** — any platform (Matrix, Discord, Signal, etc.) for NAT traversal or when HTTP isn't available
 
 ## Tested With
 
