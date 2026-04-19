@@ -1,274 +1,97 @@
-# hermes-agent Implementation
-
-Complete guide to adding Agent Mesh Protocol support to hermes-agent.
+# hermes-agent Implementation Guide
 
 ## Overview
 
-This adds structured JSON communication to hermes-agent, allowing it to participate in a multi-agent mesh alongside OpenClaw and other agents.
+hermes-agent has built-in support for the Agent Mesh Protocol via:
+1. **API Server** — OpenAI-compatible HTTP endpoint (`/v1/chat/completions`)
+2. **Agent Mesh Handler** — `gateway/agent_mesh.py` module for structured message handling
+3. **Matrix integration** — Optional fallback transport
 
-## 1. Create the handler module
+## Quick Setup
 
-Save as `gateway/agent_mesh.py` in your hermes-agent directory:
+### 1. Enable the API Server
 
-```python
-"""
-Agent Mesh Protocol handler for hermes-agent.
-
-Enables structured JSON communication with other agents (OpenClaw, etc.)
-over Matrix DMs.
-"""
-
-import json
-import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
-
-logger = logging.getLogger(__name__)
-
-# Agent identity — customize these for your instance
-AGENT_ID = "hermes"
-AGENT_MODEL = "qwen-plus"  # or gpt-4o, claude, etc.
-AGENT_RUNTIME = "hermes"
-
-# Supported capabilities
-CAPABILITIES = [
-    "ping",
-    "task",
-    "broadcast",
-    "capability_query",
-]
-
-TOOLS = [
-    "web_fetch",
-    "exec",
-    "read",
-    "write",
-    "search",
-]
-
-
-def is_agent_mesh_message(body: str) -> bool:
-    """Check if a message is an agent-mesh protocol message."""
-    if not body or not body.strip().startswith("{"):
-        return False
-    try:
-        msg = json.loads(body)
-        return msg.get("protocol") == "agent-mesh"
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
-def _now_iso() -> str:
-    """Return current UTC timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _make_response(
-    msg_type: str,
-    reply_to: Optional[str] = None,
-    payload: Optional[dict] = None,
-) -> str:
-    """Build an agent-mesh response message."""
-    response = {
-        "protocol": "agent-mesh",
-        "version": "1.0",
-        "type": msg_type,
-        "from": AGENT_ID,
-        "timestamp": _now_iso(),
-        "runtime": AGENT_RUNTIME,
-        "model": AGENT_MODEL,
-    }
-    if reply_to:
-        response["reply_to"] = reply_to
-    if payload:
-        response["payload"] = payload
-    return json.dumps(response)
-
-
-async def handle_agent_mesh(
-    body: str,
-    sender: str,
-    adapter: Any = None,
-) -> Optional[str]:
-    """
-    Handle an agent-mesh protocol message.
-    
-    Args:
-        body: The raw message body (JSON string)
-        sender: Matrix user ID of the sender
-        adapter: The Matrix adapter instance (for advanced operations)
-    
-    Returns:
-        JSON response string, or None if no response needed
-    """
-    try:
-        msg = json.loads(body)
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Failed to parse agent-mesh message: {e}")
-        return _make_response("error", payload={
-            "code": "parse_error",
-            "message": str(e),
-        })
-    
-    msg_type = msg.get("type")
-    msg_id = msg.get("id")
-    msg_from = msg.get("from", "unknown")
-    
-    logger.info(f"[agent-mesh] Received {msg_type} from {msg_from}")
-    
-    # Handle different message types
-    
-    if msg_type == "ping":
-        return _make_response("pong", reply_to=msg_id)
-    
-    elif msg_type == "capability_query":
-        return _make_response("capability_response", reply_to=msg_id, payload={
-            "runtime": AGENT_RUNTIME,
-            "model": AGENT_MODEL,
-            "capabilities": CAPABILITIES,
-            "tools": TOOLS,
-            "max_context": 131072,
-        })
-    
-    elif msg_type == "task":
-        payload = msg.get("payload", {})
-        action = payload.get("action")
-        params = payload.get("params", {})
-        
-        # Log the task
-        logger.info(f"[agent-mesh] Task received: action={action}, params={params}")
-        
-        # Return accepted status
-        # TODO: Implement actual task execution based on action type
-        return _make_response("task_result", reply_to=msg_id, payload={
-            "status": "accepted",
-            "message": f"Task '{action}' received and queued for processing",
-        })
-    
-    elif msg_type == "broadcast":
-        payload = msg.get("payload", {})
-        topic = payload.get("topic", "unknown")
-        message = payload.get("message", "")
-        logger.info(f"[agent-mesh] Broadcast from {msg_from}: [{topic}] {message}")
-        # Broadcasts don't require a response
-        return None
-    
-    elif msg_type in ("pong", "task_result", "capability_response", "error"):
-        # These are responses to our messages, log but don't reply
-        logger.info(f"[agent-mesh] Received response: {msg_type} from {msg_from}")
-        return None
-    
-    else:
-        logger.warning(f"[agent-mesh] Unknown message type: {msg_type}")
-        return _make_response("error", reply_to=msg_id, payload={
-            "code": "unknown_type",
-            "message": f"Unknown message type: {msg_type}",
-        })
-
-
-# Export for easy importing
-__all__ = ["is_agent_mesh_message", "handle_agent_mesh", "AGENT_ID", "AGENT_MODEL"]
-```
-
-## 2. Patch the Matrix adapter
-
-Edit `gateway/platforms/matrix.py`:
-
-### Add import (after other gateway imports, around line 100):
-
-```python
-from gateway.platforms.helpers import ThreadParticipationTracker
-
-# Agent Mesh Protocol support
-try:
-    from gateway.agent_mesh import is_agent_mesh_message, handle_agent_mesh
-    _AGENT_MESH_AVAILABLE = True
-except ImportError:
-    _AGENT_MESH_AVAILABLE = False
-    def is_agent_mesh_message(body): return False
-    async def handle_agent_mesh(body, sender, adapter): return None
-```
-
-### Add handler check in `_handle_text_message` (after body extraction):
-
-Find this code:
-```python
-body = source_content.get("body", "") or ""
-if not body:
-    return
-```
-
-Add immediately after:
-```python
-# Agent Mesh Protocol: handle structured JSON messages from other agents
-if _AGENT_MESH_AVAILABLE and is_agent_mesh_message(body):
-    response = await handle_agent_mesh(body, sender, self)
-    if response:
-        await self._send_simple_message(room_id, response, "m.text")
-    return  # Don't process as normal message
-```
-
-## 3. Add peer agents to allowed users
-
-In your `.env` file or environment:
+Add to `~/.hermes/.env`:
 
 ```bash
-MATRIX_ALLOWED_USERS=@dakota:matrix.lert.fyi,@bucky:matrix.lert.fyi,@timber:matrix.lert.fyi
+API_SERVER_ENABLED=true
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642
+API_SERVER_KEY=your-secret-api-key
 ```
 
-## 4. Restart hermes gateway
+### 2. Restart the Gateway
 
 ```bash
-systemctl restart hermes-gateway
+hermes gateway stop
+hermes gateway run --replace
 # or
-pkill -f "hermes_cli.main gateway" && hermes gateway run --replace
+systemctl restart hermes-gateway
 ```
 
-## Testing
+### 3. Verify
 
-Send a ping from another agent:
-```json
-{"protocol":"agent-mesh","version":"1.0","type":"ping","from":"bucky","id":"test-001","timestamp":"2026-04-19T16:00:00Z"}
+```bash
+curl http://localhost:8642/health
+# {"status": "ok", "platform": "hermes-agent"}
 ```
 
-Hermes should respond with:
-```json
-{"protocol":"agent-mesh","version":"1.0","type":"pong","from":"hermes","timestamp":"...","runtime":"hermes","model":"qwen-plus","reply_to":"test-001"}
-```
+## API Server Endpoints
 
-## Extending Task Handling
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health check |
+| `/health/detailed` | GET | Rich status (model, uptime, etc.) |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (agent-mesh messages go here) |
+| `/v1/models` | GET | List available models |
+| `/v1/runs` | POST | Start async run |
+| `/v1/runs/{id}/events` | GET | SSE stream for run events |
 
-To actually execute tasks, expand the `task` handler in `agent_mesh.py`:
+## Agent Mesh Handler
 
-```python
-elif msg_type == "task":
-    payload = msg.get("payload", {})
-    action = payload.get("action")
-    params = payload.get("params", {})
-    
-    if action == "send_message":
-        # Example: send a message to another user
-        to = params.get("to")
-        message = params.get("message")
-        if adapter and to and message:
-            await adapter.send_dm(to, message)
-            return _make_response("task_result", reply_to=msg_id, payload={
-                "status": "completed",
-                "message": f"Message sent to {to}",
-            })
-    
-    elif action == "research":
-        # Example: web search task
-        topic = params.get("topic")
-        # ... implement research logic ...
-        return _make_response("task_result", reply_to=msg_id, payload={
-            "status": "completed",
-            "result": {"summary": "...", "sources": []},
-        })
-    
-    # Default: acknowledge unknown actions
-    return _make_response("task_result", reply_to=msg_id, payload={
-        "status": "accepted",
-        "message": f"Task '{action}' received",
-    })
-```
+The `gateway/agent_mesh.py` module provides:
+
+- `is_agent_mesh_message(body)` — checks if a message is agent-mesh protocol
+- `handle_agent_mesh(body, sender, adapter)` — processes the message and returns a response
+- Auto-discovery of tools from the `tools/` directory
+- Model detection from `config.yaml`
+
+### Supported Message Types
+
+| Type | Handler | Response |
+|------|---------|----------|
+| `ping` | Returns pong with runtime/model info | `pong` |
+| `capability_query` | Lists tools and capabilities | `capability_response` |
+| `task` | Routes to AIAgent for execution | `task_result` |
+| `broadcast` | Logs, no response | None |
+| `pong` / `task_result` / `error` | Logs | None |
+
+### Task Execution
+
+When a `task` message is received, the handler:
+1. Extracts `action` and `params` from the payload
+2. Maps common actions to natural language prompts:
+   - `research` → "Research this topic and provide sources"
+   - `execute` → "Execute this shell command"
+   - `file_operation` → "Read/write file"
+   - `web_fetch` → "Fetch and summarize URL"
+3. Runs the prompt through the full AIAgent pipeline (with tools)
+4. Returns the result (truncated to 4000 chars)
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_SERVER_ENABLED` | `false` | Enable the API server |
+| `API_SERVER_HOST` | `127.0.0.1` | Bind address |
+| `API_SERVER_PORT` | `8642` | Listen port |
+| `API_SERVER_KEY` | (none) | Bearer token for auth |
+| `API_SERVER_CORS_ORIGINS` | (none) | Comma-separated CORS origins |
+| `API_SERVER_MODEL_NAME` | (auto) | Override model name in /v1/models |
+
+## Security
+
+- Always set `API_SERVER_KEY` in production
+- Use `API_SERVER_HOST=127.0.0.1` if only local access is needed
+- Use `API_SERVER_HOST=0.0.0.0` for LAN mesh access
+- The API key is sent as `Authorization: Bearer <key>` header
