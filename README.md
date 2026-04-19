@@ -1,10 +1,6 @@
 # Agent Mesh Protocol v1.0
 
-A simple JSON-over-Matrix protocol for agent-to-agent communication. Works with OpenClaw, hermes-agent, or any Matrix-connected agent.
-
-## Overview
-
-Agent Mesh lets multiple AI agents communicate using structured JSON messages sent through Matrix rooms. No custom servers needed — just Matrix accounts and DM rooms between agents.
+A simple JSON-over-Matrix protocol for AI agent-to-agent communication. Works with **OpenClaw**, **hermes-agent**, or any Matrix-connected agent.
 
 ## Why?
 
@@ -14,6 +10,7 @@ When you run multiple AI agents (different models, different roles), they need a
 - **Cheap** — no wasted tokens parsing "Hey, could you please..."
 - **Auditable** — every message is a JSON object in a Matrix room
 - **Extensible** — add new message types without breaking existing ones
+- **Runtime agnostic** — OpenClaw, hermes-agent, custom Python/Node/etc.
 
 ## Quick Start
 
@@ -31,9 +28,10 @@ When you run multiple AI agents (different models, different roles), they need a
   "type": "<message-type>",
   "from": "<sender-agent-id>",
   "timestamp": "<ISO-8601>",
-  "id": "<optional-unique-id>",
-  "reply_to": "<optional-id-of-message-being-replied-to>",
   "runtime": "<optional: openclaw|hermes|custom>",
+  "model": "<optional: model-name>",
+  "id": "<optional-unique-id>",
+  "reply_to": "<optional-id-being-replied-to>",
   "payload": { ... }
 }
 ```
@@ -51,94 +49,84 @@ When you run multiple AI agents (different models, different roles), they need a
 
 ## Examples
 
-### Ping
+### Ping/Pong
 
 ```json
-{"protocol":"agent-mesh","version":"1.0","type":"ping","from":"agent-alpha","id":"ping-001","timestamp":"2026-04-19T15:55:00Z"}
+{"protocol":"agent-mesh","version":"1.0","type":"ping","from":"bucky","id":"ping-001","timestamp":"2026-04-19T15:55:00Z"}
 ```
-
-### Pong
 
 ```json
-{"protocol":"agent-mesh","version":"1.0","type":"pong","from":"agent-beta","timestamp":"2026-04-19T15:55:01Z","reply_to":"ping-001","runtime":"hermes","model":"gpt-4o"}
+{"protocol":"agent-mesh","version":"1.0","type":"pong","from":"hermes","reply_to":"ping-001","timestamp":"2026-04-19T15:55:01Z","runtime":"hermes","model":"qwen-plus"}
 ```
 
-### Task
+### Task Delegation
 
 ```json
 {
   "protocol": "agent-mesh",
   "version": "1.0",
   "type": "task",
-  "from": "agent-alpha",
+  "from": "bucky",
   "id": "task-001",
   "timestamp": "2026-04-19T15:55:00Z",
   "payload": {
     "action": "research",
-    "params": {
-      "topic": "solar panel efficiency trends 2026",
-      "max_sources": 5
-    },
+    "params": {"topic": "solar panel trends", "max_sources": 5},
     "priority": "normal"
   }
 }
 ```
 
-### Capability Query
+### Capability Discovery
 
 ```json
-{"protocol":"agent-mesh","version":"1.0","type":"capability_query","from":"agent-alpha","id":"cap-001","timestamp":"2026-04-19T15:55:00Z"}
+{"protocol":"agent-mesh","version":"1.0","type":"capability_query","from":"bucky","id":"cap-001"}
 ```
-
-### Capability Response
 
 ```json
 {
   "protocol": "agent-mesh",
   "version": "1.0",
   "type": "capability_response",
-  "from": "agent-beta",
+  "from": "timber",
   "reply_to": "cap-001",
-  "timestamp": "2026-04-19T15:55:01Z",
   "payload": {
-    "runtime": "hermes",
-    "model": "gpt-4o",
+    "runtime": "openclaw",
+    "model": "qwen-plus",
     "capabilities": ["ping", "task", "broadcast"],
     "tools": ["web_fetch", "exec", "read", "write"]
   }
 }
 ```
 
-## Implementation
+## Implementation Guides
 
-### OpenClaw
-
-Add the protocol spec to your agent's workspace (`AGENTS.md` or `docs/agent-mesh-protocol.md`). OpenClaw agents handle JSON messages naturally.
-
-### hermes-agent
-
-See [hermes-implementation.md](hermes-implementation.md) for the Python handler code.
-
-### Custom
-
-Any Matrix client can participate:
-1. Listen for DM messages
-2. Check if body is JSON with `"protocol": "agent-mesh"`
-3. Handle structured messages, respond in kind
-4. Pass non-JSON messages to normal conversation flow
+| Runtime | Guide |
+|---------|-------|
+| **OpenClaw** | Add protocol spec to workspace; agents handle JSON naturally |
+| **hermes-agent** | See [hermes-implementation.md](hermes-implementation.md) |
+| **Custom** | Parse JSON, check `protocol` field, respond in kind |
 
 ## Design Principles
 
-- **Matrix as transport** — no custom infrastructure
+- **Matrix as transport** — no custom infrastructure needed
 - **JSON over natural language** — structured for machines
-- **Protocol field as discriminator** — easy to distinguish from human chat
-- **Stateless messages** — self-contained, no shared state needed
+- **Protocol field as discriminator** — easy to distinguish from human chat  
+- **Stateless messages** — self-contained, no shared state required
 - **Extensible** — add new types without breaking existing handlers
+
+## Tested With
+
+| Agent | Runtime | Model | Status |
+|-------|---------|-------|--------|
+| Bucky | OpenClaw | Claude Opus | ✅ Coordinator |
+| Timber | OpenClaw | Qwen Plus | ✅ Connected |
+| Hermes | hermes-agent | Qwen Plus | ✅ Connected |
 
 ## Future Extensions
 
 - `stream` — streaming results for long tasks
-- `cancel` — abort a running task  
+- `cancel` — abort a running task
 - `delegate` — hand off to a more capable agent
 - `file_transfer` — share files via Matrix media
 
